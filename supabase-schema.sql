@@ -29,6 +29,7 @@ create table if not exists public.items (
   stato       text not null default 'stock',   -- stock | caricato | venduto | regalato
   fisico      text not null default 'casa',     -- ordinato | viaggio | casa
   vinted      boolean not null default false,   -- pubblicato su Vinted sì/no
+  caricato_at timestamptz,                       -- quando è diventato "caricato" (per la giacenza)
   data        date,
   note        text default '',
   created_at  timestamptz not null default now()
@@ -48,7 +49,18 @@ create table if not exists public.sales (
   canale        text default 'Vinted',
   data          date,
   telefono      text default '',
+  reso          text not null default 'no',        -- no | in_arrivo | spedito | consegnato
+  giacenza_giorni integer,                          -- giorni dal carico alla vendita
   created_at    timestamptz not null default now()
+);
+
+-- ---------- TO-DO (lista rapida) ----------
+create table if not exists public.todos (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references auth.users on delete cascade,
+  testo       text not null,
+  fatto       boolean not null default false,
+  created_at  timestamptz not null default now()
 );
 
 -- ---------- SPESE ----------
@@ -101,6 +113,7 @@ alter table public.sales    enable row level security;
 alter table public.expenses enable row level security;
 alter table public.credits  enable row level security;
 alter table public.orders   enable row level security;
+alter table public.todos    enable row level security;
 
 -- profili: ognuno vede e modifica solo il proprio
 drop policy if exists "profiles self" on public.profiles;
@@ -111,7 +124,7 @@ create policy "profiles self" on public.profiles
 do $$
 declare t text;
 begin
-  foreach t in array array['items','sales','expenses','credits','orders']
+  foreach t in array array['items','sales','expenses','credits','orders','todos']
   loop
     execute format('drop policy if exists "owner all" on public.%I;', t);
     execute format(

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Plus, Settings, Download, X, Trash2, Gift, Smartphone, Wallet, LogOut,
   Package, Receipt, ChevronLeft, ChevronRight, Search, TrendingUp, Tag,
-  Truck, Pencil, ExternalLink, Check, Loader2
+  Truck, Pencil, ExternalLink, Check, Loader2, ListTodo, Flame, Clock, BarChart3
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import AuthPage from "./auth/AuthPage";
@@ -13,7 +13,7 @@ import {
 
 /* ============================================================ */
 const EXPENSE_TYPES = ["Boost", "Buste / packaging", "Regalo", "Spedizione", "Costi vendita", "Altro"];
-const CHANNELS = ["Vinted", "Reseller", "Altro"];
+const CHANNELS = ["Vinted", "eBay", "Depop", "Facebook Marketplace", "Altro"];
 const ACTIVE = ["stock", "caricato"];
 const FISICO_LABEL = { ordinato: "ordinato · da spedire", viaggio: "in viaggio", casa: "a casa" };
 const FISICO_OPTS = [
@@ -22,6 +22,7 @@ const FISICO_OPTS = [
   ["casa", "A casa"],
 ];
 const STATO_LABEL = { stock: "in stock", caricato: "caricato", venduto: "venduto", regalato: "regalato" };
+const SLOW_DAYS = 30; // oltre questi giorni un pezzo caricato è "lento"
 
 const todayISO = () => {
   const d = new Date();
@@ -31,6 +32,17 @@ const thisYM = () => todayISO().slice(0, 7);
 const eur = (n) => new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(n) || 0);
 const num = (v) => { const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? 0 : n; };
 const codeOf = (s) => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3).padEnd(3, "X");
+// giorni tra due date (stringa ISO o Date). Ritorna intero >= 0
+const daysBetween = (from, to) => {
+  if (!from) return null;
+  const a = new Date(from); const b = to ? new Date(to) : new Date();
+  if (isNaN(a)) return null;
+  return Math.max(0, Math.floor((b - a) / 86400000));
+};
+// semaforo su ROI%: verde >=80, giallo >=30, rosso sotto
+const roiTone = (roi) => (roi >= 80 ? "green" : roi >= 30 ? "amber" : "red");
+// canale: se "Altro" usa il testo libero scritto dall'utente
+const chanValue = (form) => (form.canale === "Altro" ? (form.canaleAltro?.trim() || "Altro") : form.canale);
 const ymLabel = (ym) => {
   const [y, m] = ym.split("-");
   const mesi = ["Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno","Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"];
@@ -47,6 +59,7 @@ const shiftYM = (ym, d) => {
    ============================================================ */
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = sto controllando
+  const [demo, setDemo] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -54,6 +67,7 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  if (demo) return <Workspace demo onExitDemo={() => setDemo(false)} />;
   if (session === undefined) {
     return (
       <div className="rk-root rk-loading"><div className="rk-loader">
@@ -61,15 +75,15 @@ export default function App() {
       </div></div>
     );
   }
-  if (!session) return <AuthPage />;
+  if (!session) return <AuthPage onDemo={() => setDemo(true)} />;
   return <Workspace session={session} />;
 }
 
 /* ============================================================
    Workspace: l'app vera, dopo il login
    ============================================================ */
-function Workspace({ session }) {
-  const userId = session.user.id;
+function Workspace({ session, demo, onExitDemo }) {
+  const userId = demo ? "demo" : session.user.id;
   const [profile, setProfile] = useState(null);
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("dash");
@@ -81,12 +95,30 @@ function Workspace({ session }) {
   const [editItem, setEditItem] = useState(null);
   const [bulkNoteIds, setBulkNoteIds] = useState(null);
   const [bulkFisicoIds, setBulkFisicoIds] = useState(null);
+  const [editExp, setEditExp] = useState(null);
 
   const isAdmin = profile?.role === "admin";
+
+  // in demo tutte le scritture restano locali (niente database)
+  const localId = () => "demo-" + Math.random().toString(36).slice(2, 9);
+  const api = useMemo(() => demo ? {
+    insertRow: async (_t, obj) => ({ ...obj, id: localId() }),
+    insertMany: async (_t, objs) => objs.map((o) => ({ ...o, id: localId() })),
+    updateRow: async () => {},
+    deleteRow: async () => {},
+    deleteWhere: async () => {},
+    updateProfile: async () => {},
+  } : { insertRow, insertMany, updateRow, deleteRow, deleteWhere, updateProfile }, [demo]);
 
   useEffect(() => {
     (async () => {
       try {
+        if (demo) {
+          const fx = demoFixture();
+          setProfile(fx.profile);
+          setData({ ...fx.data, phones: fx.profile.phones, pct: fx.profile.pct });
+          return;
+        }
         const [p, d] = await Promise.all([loadProfile(userId), loadAll(userId)]);
         setProfile(p);
         setData({ ...d, phones: p.phones, pct: p.pct });
@@ -95,7 +127,7 @@ function Workspace({ session }) {
         console.error(e);
       }
     })();
-  }, [userId]);
+  }, [userId, demo]);
 
   useEffect(() => {
     if (!toast) return;
@@ -146,26 +178,29 @@ function Workspace({ session }) {
         brand: form.brand.trim(), nome: form.nome.trim(), categoria: form.categoria.trim(),
         taglia: form.taglia.trim(), costo: num(form.costo), telefono: form.telefono || "",
         stato: form.telefono ? "caricato" : "stock", fisico: form.fisico || "casa",
-        vinted: !!form.telefono, data: form.data || todayISO(), note: form.note.trim(),
+        vinted: !!form.telefono, caricatoAt: form.telefono ? new Date().toISOString() : null,
+        data: form.data || todayISO(), note: form.note.trim(),
       });
     }
     try {
-      const created = await insertMany("items", objs, userId);
+      const created = await api.insertMany("items", objs, userId);
       apply((d) => { d.items = [...created, ...d.items]; return d; }, qty > 1 ? `${qty} articoli caricati` : "Articolo caricato");
     } catch (e) { flash("Errore nel salvataggio"); }
   };
 
   const sellOne = async (item, form) => {
     try {
-      const sale = await insertRow("sales", {
+      const saleDate = form.data || todayISO();
+      const giac = daysBetween(item.caricatoAt || item.data, saleDate);
+      const sale = await api.insertRow("sales", {
         itemId: item.id, sku: item.sku, nome: item.nome, brand: item.brand,
         prezzo: num(form.prezzo), costo: item.costo, costiVendita: num(form.costi),
-        canale: form.canale, data: form.data || todayISO(), telefono: item.telefono,
+        canale: chanValue(form), data: saleDate, telefono: item.telefono, giacenzaGiorni: giac,
       }, userId);
-      await updateRow("items", item.id, { stato: "venduto" });
+      await api.updateRow("items", item.id, { stato: "venduto" });
       let exp = null;
       if (num(form.costi) > 0) {
-        exp = await insertRow("expenses", {
+        exp = await api.insertRow("expenses", {
           tipo: "Costi vendita", importo: num(form.costi), data: form.data || todayISO(),
           nota: `Costi vendita ${item.sku}`, telefono: item.telefono || "", saleId: sale.id,
         }, userId);
@@ -183,15 +218,17 @@ function Workspace({ session }) {
   const sellBulk = async (items, form) => {
     try {
       for (const item of items) {
-        const sale = await insertRow("sales", {
+        const saleDate = form.data || todayISO();
+        const giac = daysBetween(item.caricatoAt || item.data, saleDate);
+        const sale = await api.insertRow("sales", {
           itemId: item.id, sku: item.sku, nome: item.nome, brand: item.brand,
           prezzo: num(form.prezzo), costo: item.costo, costiVendita: num(form.costi),
-          canale: form.canale, data: form.data || todayISO(), telefono: item.telefono || "—",
+          canale: chanValue(form), data: saleDate, telefono: item.telefono || "—", giacenzaGiorni: giac,
         }, userId);
-        await updateRow("items", item.id, { stato: "venduto" });
+        await api.updateRow("items", item.id, { stato: "venduto" });
         let exp = null;
         if (num(form.costi) > 0) {
-          exp = await insertRow("expenses", {
+          exp = await api.insertRow("expenses", {
             tipo: "Costi vendita", importo: num(form.costi), data: form.data || todayISO(),
             nota: `Costi vendita ${item.sku}`, telefono: item.telefono || "", saleId: sale.id,
           }, userId);
@@ -211,8 +248,8 @@ function Workspace({ session }) {
   const giftItem = async (item) => {
     if (!window.confirm(`Segnare ${item.sku} come regalo? Il costo (${eur(item.costo)}) finirà tra le spese.`)) return;
     try {
-      await updateRow("items", item.id, { stato: "regalato" });
-      const exp = await insertRow("expenses", {
+      await api.updateRow("items", item.id, { stato: "regalato" });
+      const exp = await api.insertRow("expenses", {
         tipo: "Regalo", importo: item.costo, data: todayISO(),
         nota: `Regalo articolo ${item.sku} — ${item.nome}`, telefono: item.telefono || "",
       }, userId);
@@ -225,7 +262,7 @@ function Workspace({ session }) {
 
   const removeItem = async (item) => {
     if (!window.confirm(`Eliminare ${item.sku}?`)) return;
-    try { await deleteRow("items", item.id);
+    try { await api.deleteRow("items", item.id);
       apply((d) => { d.items = d.items.filter((i) => i.id !== item.id); return d; }, "Articolo eliminato");
     } catch (e) { flash("Errore"); }
   };
@@ -233,10 +270,10 @@ function Workspace({ session }) {
   const removeSale = async (sale) => {
     if (!window.confirm(`Annullare la vendita di ${sale.sku}? L'articolo torna in magazzino.`)) return;
     try {
-      await deleteRow("sales", sale.id);
-      await deleteWhere("expenses", "sale_id", sale.id);
+      await api.deleteRow("sales", sale.id);
+      await api.deleteWhere("expenses", "sale_id", sale.id);
       const it = data.items.find((i) => i.id === sale.itemId);
-      if (it) await updateRow("items", it.id, { stato: it.telefono ? "caricato" : "stock" });
+      if (it) await api.updateRow("items", it.id, { stato: it.telefono ? "caricato" : "stock" });
       apply((d) => {
         d.sales = d.sales.filter((s) => s.id !== sale.id);
         d.expenses = d.expenses.filter((e) => e.saleId !== sale.id);
@@ -248,7 +285,7 @@ function Workspace({ session }) {
   };
 
   const saveEdit = async (id, patch) => {
-    try { await updateRow("items", id, patch);
+    try { await api.updateRow("items", id, patch);
       apply((d) => { const it = d.items.find((i) => i.id === id); if (it) Object.assign(it, patch); return d; }, "Articolo aggiornato");
     } catch (e) { flash("Errore"); }
     setEditItem(null);
@@ -256,20 +293,20 @@ function Workspace({ session }) {
 
   const toggleVinted = async (item) => {
     const v = !item.vinted;
-    try { await updateRow("items", item.id, { vinted: v });
+    try { await api.updateRow("items", item.id, { vinted: v });
       apply((d) => { const it = d.items.find((i) => i.id === item.id); if (it) it.vinted = v; return d; });
     } catch (e) { flash("Errore"); }
   };
 
   const bulkNote = async (ids, note) => {
-    try { for (const id of ids) await updateRow("items", id, { note });
+    try { for (const id of ids) await api.updateRow("items", id, { note });
       apply((d) => { d.items.forEach((i) => { if (ids.includes(i.id)) i.note = note; }); return d; }, `Nota applicata a ${ids.length} articoli`);
     } catch (e) { flash("Errore"); }
     setBulkNoteIds(null);
   };
 
   const bulkFisico = async (ids, fisico) => {
-    try { for (const id of ids) await updateRow("items", id, { fisico });
+    try { for (const id of ids) await api.updateRow("items", id, { fisico });
       apply((d) => { d.items.forEach((i) => { if (ids.includes(i.id)) i.fisico = fisico; }); return d; }, `${ids.length} articoli: ${FISICO_LABEL[fisico]}`);
     } catch (e) { flash("Errore"); }
     setBulkFisicoIds(null);
@@ -277,13 +314,24 @@ function Workspace({ session }) {
 
   const assignPhone = async (ids, phone) => {
     const none = phone === "__none__";
+    const nowISO = new Date().toISOString();
     try {
-      for (const id of ids) await updateRow("items", id, none ? { telefono: "", stato: "stock", vinted: false } : { telefono: phone, stato: "caricato" });
+      for (const id of ids) {
+        const it = data.items.find((x) => x.id === id);
+        if (none) {
+          await api.updateRow("items", id, { telefono: "", stato: "stock", vinted: false, caricatoAt: null });
+        } else {
+          // imposta caricatoAt solo se non già presente (la giacenza parte dal primo carico)
+          const patch = { telefono: phone, stato: "caricato" };
+          if (!it?.caricatoAt) patch.caricatoAt = nowISO;
+          await api.updateRow("items", id, patch);
+        }
+      }
       apply((d) => {
         d.items.forEach((i) => {
           if (ids.includes(i.id)) {
-            if (none) { i.telefono = ""; i.stato = "stock"; i.vinted = false; }
-            else { i.telefono = phone; i.stato = "caricato"; }
+            if (none) { i.telefono = ""; i.stato = "stock"; i.vinted = false; i.caricatoAt = null; }
+            else { i.telefono = phone; i.stato = "caricato"; if (!i.caricatoAt) i.caricatoAt = nowISO; }
           }
         });
         return d;
@@ -295,11 +343,11 @@ function Workspace({ session }) {
   /* ordini */
   const addOrder = async (form, itemIds) => {
     try {
-      const o = await insertRow("orders", {
+      const o = await api.insertRow("orders", {
         tracking: form.tracking.trim(), corriere: form.corriere.trim(), nota: form.nota.trim(),
         data: form.data || todayISO(), stato: "in_viaggio", itemIds,
       }, userId);
-      for (const id of itemIds) await updateRow("items", id, { fisico: "viaggio" });
+      for (const id of itemIds) await api.updateRow("items", id, { fisico: "viaggio" });
       apply((d) => {
         d.orders = [o, ...d.orders];
         d.items.forEach((i) => { if (itemIds.includes(i.id)) i.fisico = "viaggio"; });
@@ -310,8 +358,8 @@ function Workspace({ session }) {
 
   const orderDelivered = async (order) => {
     try {
-      await updateRow("orders", order.id, { stato: "consegnato" });
-      for (const id of order.itemIds) await updateRow("items", id, { fisico: "casa" });
+      await api.updateRow("orders", order.id, { stato: "consegnato" });
+      for (const id of order.itemIds) await api.updateRow("items", id, { fisico: "casa" });
       apply((d) => {
         const o = d.orders.find((x) => x.id === order.id); if (o) o.stato = "consegnato";
         d.items.forEach((i) => { if (order.itemIds.includes(i.id)) i.fisico = "casa"; });
@@ -322,7 +370,7 @@ function Workspace({ session }) {
 
   const removeOrder = async (order) => {
     if (!window.confirm("Eliminare questo ordine? Gli articoli non vengono toccati.")) return;
-    try { await deleteRow("orders", order.id);
+    try { await api.deleteRow("orders", order.id);
       apply((d) => { d.orders = d.orders.filter((o) => o.id !== order.id); return d; }, "Ordine eliminato");
     } catch (e) { flash("Errore"); }
   };
@@ -330,7 +378,7 @@ function Workspace({ session }) {
   /* spese */
   const addExpense = async (form) => {
     try {
-      const e = await insertRow("expenses", {
+      const e = await api.insertRow("expenses", {
         tipo: form.tipo, importo: num(form.importo), data: form.data || todayISO(),
         nota: form.nota.trim(), telefono: form.telefono || "",
       }, userId);
@@ -338,16 +386,40 @@ function Workspace({ session }) {
     } catch (er) { flash("Errore"); }
   };
   const removeExpense = async (e) => {
-    try { await deleteRow("expenses", e.id);
+    try { await api.deleteRow("expenses", e.id);
       apply((d) => { d.expenses = d.expenses.filter((x) => x.id !== e.id); return d; }, "Spesa eliminata");
     } catch (er) { flash("Errore"); }
+  };
+  const saveExpenseEdit = async (id, patch) => {
+    try { await api.updateRow("expenses", id, patch);
+      apply((d) => { const ex = d.expenses.find((x) => x.id === id); if (ex) Object.assign(ex, patch); return d; }, "Spesa aggiornata");
+    } catch (er) { flash("Errore"); }
+    setEditExp(null);
+  };
+
+  const setReso = async (sale, fase) => {
+    try {
+      await api.updateRow("sales", sale.id, { reso: fase });
+      // articolo: torna in stock SOLO quando il reso è "consegnato" a me; altrimenti resta venduto
+      const it = data.items.find((i) => i.id === sale.itemId);
+      if (it) {
+        const nuovoStato = fase === "consegnato" ? (it.telefono ? "caricato" : "stock") : "venduto";
+        if (it.stato !== nuovoStato) await api.updateRow("items", it.id, { stato: nuovoStato });
+      }
+      apply((d) => {
+        const s = d.sales.find((x) => x.id === sale.id); if (s) s.reso = fase;
+        const x = d.items.find((i) => i.id === sale.itemId);
+        if (x) x.stato = fase === "consegnato" ? (x.telefono ? "caricato" : "stock") : "venduto";
+        return d;
+      }, fase === "no" ? "Reso annullato" : fase === "consegnato" ? "Reso consegnato · articolo in stock" : `Segnato: ${fase.replace("_", " ")}`);
+    } catch (e) { flash("Errore"); }
   };
 
   /* crediti (solo admin) */
   const addCreditIn = async (form) => {
     const ordine = num(form.ordine);
     try {
-      const c = await insertRow("credits", {
+      const c = await api.insertRow("credits", {
         tipo: "in", ordine, importo: +(ordine * (data.pct / 100)).toFixed(2),
         data: form.data || todayISO(), nota: form.nota.trim(),
       }, userId);
@@ -358,7 +430,7 @@ function Workspace({ session }) {
     const importo = num(form.importo);
     const usato = +Math.min(Math.max(creditBalance, 0), importo).toFixed(2);
     try {
-      const c = await insertRow("credits", {
+      const c = await api.insertRow("credits", {
         tipo: "pagamento", ordine: 0, importo,
         usatoCredito: usato, contanti: +(importo - usato).toFixed(2),
         data: form.data || todayISO(), nota: form.nota.trim(),
@@ -367,7 +439,7 @@ function Workspace({ session }) {
     } catch (e) { flash("Errore"); }
   };
   const removeCredit = async (c) => {
-    try { await deleteRow("credits", c.id);
+    try { await api.deleteRow("credits", c.id);
       apply((d) => { d.credits = d.credits.filter((x) => x.id !== c.id); return d; }, "Movimento eliminato");
     } catch (e) { flash("Errore"); }
   };
@@ -376,18 +448,41 @@ function Workspace({ session }) {
   const saveSettings = async (phones, pct) => {
     const clean = phones.filter((p) => p.trim());
     try {
-      await updateProfile(userId, { phones: clean, pct: num(pct) || 5 });
+      await api.updateProfile(userId, { phones: clean, pct: num(pct) || 5 });
       apply((d) => { d.phones = clean; d.pct = num(pct) || 5; return d; }, "Impostazioni salvate");
     } catch (e) { flash("Errore"); }
     setShowSettings(false);
   };
 
-  const logout = async () => { await supabase.auth.signOut(); };
+  const addTodo = async (testo) => {
+    try {
+      const t = await api.insertRow("todos", { testo, fatto: false }, userId);
+      apply((d) => { d.todos = [t, ...d.todos]; return d; });
+    } catch (e) { flash("Errore"); }
+  };
+  const toggleTodo = async (todo) => {
+    try { await api.updateRow("todos", todo.id, { fatto: !todo.fatto });
+      apply((d) => { const t = d.todos.find((x) => x.id === todo.id); if (t) t.fatto = !t.fatto; return d; });
+    } catch (e) { flash("Errore"); }
+  };
+  const removeTodo = async (todo) => {
+    try { await api.deleteRow("todos", todo.id);
+      apply((d) => { d.todos = d.todos.filter((x) => x.id !== todo.id); return d; });
+    } catch (e) { flash("Errore"); }
+  };
+
+  const logout = async () => {
+    if (demo) { onExitDemo && onExitDemo(); return; }
+    await supabase.auth.signOut();
+  };
 
   const exportCSV = () => {
     const rows = [["Data", "Tipo", "Riferimento", "Descrizione", "Canale/Telefono", "Entrata", "Uscita"]];
-    data.sales.forEach((s) => rows.push([s.data, "Vendita", s.sku, `${s.brand} ${s.nome}`.trim(), s.canale, s.prezzo, 0]));
-    data.sales.forEach((s) => rows.push([s.data, "Costo merce", s.sku, `Acquisto ${s.brand} ${s.nome}`.trim(), s.telefono, 0, s.costo]));
+    data.sales.forEach((s) => {
+      const reso = s.reso && s.reso !== "no";
+      rows.push([s.data, reso ? "Vendita (reso)" : "Vendita", s.sku, `${s.brand} ${s.nome}`.trim(), s.canale, reso ? 0 : s.prezzo, 0]);
+      if (!reso) rows.push([s.data, "Costo merce", s.sku, `Acquisto ${s.brand} ${s.nome}`.trim(), s.telefono, 0, s.costo]);
+    });
     data.expenses.forEach((e) => rows.push([e.data, `Spesa — ${e.tipo}`, "", e.nota, e.telefono, 0, e.importo]));
     if (isAdmin) data.credits.forEach((c) => rows.push([
       c.data, c.tipo === "in" ? "Credito maturato" : "Pagamento fornitore", "", c.nota, "",
@@ -401,27 +496,35 @@ function Workspace({ session }) {
     URL.revokeObjectURL(a.href); flash("CSV esportato");
   };
 
+  const openTodos = data.todos.filter((t) => !t.fatto).length;
   const tabs = [
     ["dash", "Dashboard", <TrendingUp size={14} key="i" />],
     ["stock", "Stock", <Package size={14} key="i" />],
     ["ord", "Ordini", <Truck size={14} key="i" />],
     ["sales", "Vendite", <Tag size={14} key="i" />],
     ["exp", "Spese", <Receipt size={14} key="i" />],
+    ["todo", "To-do", <ListTodo size={14} key="i" />],
     ...(isAdmin ? [["cred", "Saldo fornitore", <Wallet size={14} key="i" />]] : []),
   ];
   const inViaggioOrd = data.orders.filter((o) => o.stato === "in_viaggio").length;
 
   return (
     <div className="rk-root">
+      {demo && (
+        <div className="rk-demobar">
+          <span><Flame size={13} /> Modalità DEMO — dati di esempio, niente viene salvato</span>
+          <button className="rk-btn rk-small" onClick={() => onExitDemo && onExitDemo()}>Esci dalla demo</button>
+        </div>
+      )}
       <header className="rk-header">
         <div className="rk-brandmark">
           <span className="rk-chip rk-chip-logo">RACK</span>
-          <span className="rk-sub rk-hide-sm">{profile.email}</span>
+          <span className="rk-sub rk-hide-sm">your reselling HQ</span>
         </div>
         <div className="rk-header-actions">
           <button className="rk-btn rk-ghost" onClick={exportCSV} title="Esporta CSV"><Download size={15} /><span className="rk-hide-sm">CSV</span></button>
           <button className="rk-btn rk-ghost" onClick={() => setShowSettings(true)} title="Impostazioni"><Settings size={15} /><span className="rk-hide-sm">Telefoni</span></button>
-          <button className="rk-btn rk-ghost" onClick={logout} title="Esci"><LogOut size={15} /></button>
+          <button className="rk-btn rk-ghost" onClick={logout} title={demo ? "Esci dalla demo" : "Esci"}><LogOut size={15} /></button>
         </div>
       </header>
 
@@ -431,6 +534,7 @@ function Workspace({ session }) {
             {icon} {label}
             {id === "cred" && creditBalance > 0 && <span className="rk-tab-pill">{eur(creditBalance)}</span>}
             {id === "ord" && inViaggioOrd > 0 && <span className="rk-tab-pill">{inViaggioOrd} in viaggio</span>}
+            {id === "todo" && openTodos > 0 && <span className="rk-tab-pill">{openTodos}</span>}
           </button>
         ))}
       </nav>
@@ -444,8 +548,9 @@ function Workspace({ session }) {
             onBulkNote={setBulkNoteIds} onBulkFisico={setBulkFisicoIds} onToggleVinted={toggleVinted} />
         )}
         {tab === "ord" && <OrdersTab data={data} onAdd={addOrder} onDelivered={orderDelivered} onDelete={removeOrder} />}
-        {tab === "sales" && <SalesTab data={data} onDelete={removeSale} />}
-        {tab === "exp" && <ExpensesTab data={data} onAdd={addExpense} onDelete={removeExpense} />}
+        {tab === "sales" && <SalesTab data={data} onDelete={removeSale} onSetReso={setReso} />}
+        {tab === "exp" && <ExpensesTab data={data} onAdd={addExpense} onDelete={removeExpense} onEdit={setEditExp} />}
+        {tab === "todo" && <TodoTab data={data} onAdd={addTodo} onToggle={toggleTodo} onDelete={removeTodo} />}
         {tab === "cred" && isAdmin && <CreditsTab data={data} balance={creditBalance} onIn={addCreditIn} onPay={addPayment} onDelete={removeCredit} />}
       </main>
 
@@ -455,6 +560,7 @@ function Workspace({ session }) {
       {editItem && <EditItemModal item={editItem} onClose={() => setEditItem(null)} onSave={saveEdit} />}
       {bulkNoteIds && <BulkNoteModal count={bulkNoteIds.length} onClose={() => setBulkNoteIds(null)} onConfirm={(n) => bulkNote(bulkNoteIds, n)} />}
       {bulkFisicoIds && <BulkFisicoModal count={bulkFisicoIds.length} onClose={() => setBulkFisicoIds(null)} onConfirm={(f) => bulkFisico(bulkFisicoIds, f)} />}
+      {editExp && <EditExpenseModal exp={editExp} phones={data.phones} onClose={() => setEditExp(null)} onSave={saveExpenseEdit} />}
       {showSettings && <SettingsModal data={data} role={profile.role} onClose={() => setShowSettings(false)} onSave={saveSettings} />}
       {toast && <div className="rk-toast">{toast}</div>}
     </div>
@@ -466,15 +572,36 @@ function Dashboard({ data, creditBalance, isAdmin }) {
   const [ym, setYm] = useState(thisYM());
   const m = useMemo(() => {
     const sales = data.sales.filter((s) => (s.data || "").slice(0, 7) === ym);
+    const validSales = sales.filter((s) => !s.reso || s.reso === "no");
     const expenses = data.expenses.filter((e) => (e.data || "").slice(0, 7) === ym);
     const creditsIn = data.credits.filter((c) => c.tipo === "in" && (c.data || "").slice(0, 7) === ym);
-    const ricavi = sales.reduce((a, s) => a + s.prezzo, 0);
-    const cogs = sales.reduce((a, s) => a + s.costo, 0);
+    const ricavi = validSales.reduce((a, s) => a + s.prezzo, 0);
+    const cogs = validSales.reduce((a, s) => a + s.costo, 0);
     const spese = expenses.reduce((a, e) => a + e.importo, 0);
     const maturati = creditsIn.reduce((a, c) => a + c.importo, 0);
-    return { nVendite: sales.length, ricavi, cogs, spese, maturati,
+    return { nVendite: validSales.length, nResi: sales.length - validSales.length, ricavi, cogs, spese, maturati,
       profitto: ricavi - cogs - spese + (isAdmin ? maturati : 0) };
   }, [data, ym, isAdmin]);
+
+  // riepilogo OGGI
+  const oggi = useMemo(() => {
+    const t = todayISO();
+    const sales = data.sales.filter((s) => s.data === t && (!s.reso || s.reso === "no"));
+    const profitto = sales.reduce((a, s) => a + (s.prezzo - s.costo - (s.costiVendita || 0)), 0);
+    return { n: sales.length, profitto };
+  }, [data]);
+
+  // statistiche per brand (profitto, su vendite valide del mese)
+  const brandStats = useMemo(() => {
+    const map = {};
+    data.sales.filter((s) => (s.data || "").slice(0, 7) === ym && (!s.reso || s.reso === "no")).forEach((s) => {
+      const k = s.brand || "—";
+      map[k] = map[k] || { n: 0, profitto: 0 };
+      map[k].n += 1; map[k].profitto += s.prezzo - s.costo - (s.costiVendita || 0);
+    });
+    return Object.entries(map).map(([brand, v]) => ({ brand, ...v })).sort((a, b) => b.profitto - a.profitto).slice(0, 5);
+  }, [data, ym]);
+  const maxBrand = Math.max(1, ...brandStats.map((b) => Math.abs(b.profitto)));
 
   const stock = useMemo(() => {
     const attivi = data.items.filter((i) => ACTIVE.includes(i.stato));
@@ -482,24 +609,34 @@ function Dashboard({ data, creditBalance, isAdmin }) {
     const perPhone = {};
     data.phones.forEach((p) => (perPhone[p] = 0));
     caricati.forEach((i) => { perPhone[i.telefono] = (perPhone[i.telefono] || 0) + 1; });
+    const lenti = caricati.filter((i) => (daysBetween(i.caricatoAt) ?? 0) >= SLOW_DAYS);
     return {
       n: attivi.length, nonCaricati: attivi.length - caricati.length,
       inViaggio: attivi.filter((i) => i.fisico === "viaggio").length,
       ordinati: attivi.filter((i) => i.fisico === "ordinato").length,
       valore: attivi.reduce((a, i) => a + i.costo, 0), perPhone,
+      lenti: lenti.length, capitaleLento: lenti.reduce((a, i) => a + i.costo, 0),
     };
   }, [data]);
   const maxPhone = Math.max(1, ...Object.values(stock.perPhone));
 
   return (
     <div className="rk-stack">
+      <div className="rk-todaybar">
+        <div className="rk-today-left"><Flame size={16} /> <span>Oggi</span></div>
+        <div className="rk-today-stats">
+          <span><strong className="rk-mono">{oggi.n}</strong> {oggi.n === 1 ? "vendita" : "vendite"}</span>
+          <span className={`rk-mono ${oggi.profitto >= 0 ? "rk-tonetext-green" : "rk-tonetext-red"}`}>{oggi.profitto >= 0 ? "+" : ""}{eur(oggi.profitto)}</span>
+        </div>
+      </div>
+
       <div className="rk-monthnav">
         <button className="rk-btn rk-ghost rk-sq" onClick={() => setYm(shiftYM(ym, -1))}><ChevronLeft size={16} /></button>
         <h2>{ymLabel(ym)}</h2>
         <button className="rk-btn rk-ghost rk-sq" onClick={() => setYm(shiftYM(ym, 1))} disabled={ym >= thisYM()}><ChevronRight size={16} /></button>
       </div>
       <div className="rk-kpis">
-        <Kpi label="Ricavi vendite" value={eur(m.ricavi)} sub={`${m.nVendite} pezzi venduti`} />
+        <Kpi label="Ricavi vendite" value={eur(m.ricavi)} sub={`${m.nVendite} venduti${m.nResi ? ` · ${m.nResi} resi` : ""}`} />
         <Kpi label="Costo merce venduta" value={"−" + eur(m.cogs)} tone="mut" />
         <Kpi label="Spese operative" value={"−" + eur(m.spese)} sub="boost · buste · regali · costi vendita" tone="mut" />
         {isAdmin && <Kpi label="Crediti maturati" value={"+" + eur(m.maturati)} tone="amber" />}
@@ -520,6 +657,9 @@ function Dashboard({ data, creditBalance, isAdmin }) {
             </p>
           )}
           {stock.nonCaricati > 0 && <p className="rk-mutlabel rk-mt6">{stock.nonCaricati} non ancora caricati su account</p>}
+          {stock.lenti > 0 && (
+            <p className="rk-slowline rk-mt12"><Clock size={13} /> {stock.lenti} pezzi fermi da oltre {SLOW_DAYS}gg · {eur(stock.capitaleLento)} bloccati</p>
+          )}
         </div>
         <div className="rk-card">
           <h3 className="rk-h3"><Smartphone size={15} /> Pezzi per telefono</h3>
@@ -534,6 +674,22 @@ function Dashboard({ data, creditBalance, isAdmin }) {
           </div>
         </div>
       </div>
+
+      {brandStats.length > 0 && (
+        <div className="rk-card">
+          <h3 className="rk-h3"><BarChart3 size={15} /> Profitto per brand · {ymLabel(ym)}</h3>
+          <div className="rk-bars">
+            {brandStats.map((b) => (
+              <div key={b.brand} className="rk-barrow">
+                <span className="rk-barlabel">{b.brand} <span className="rk-mutlabel">·{b.n}</span></span>
+                <div className="rk-bartrack"><div className={`rk-barfill ${b.profitto < 0 ? "rk-barfill-neg" : ""}`} style={{ width: `${(Math.abs(b.profitto) / maxBrand) * 100}%` }} /></div>
+                <span className={`rk-barnum rk-mono ${b.profitto >= 0 ? "rk-tonetext-green" : "rk-tonetext-red"}`}>{eur(b.profitto)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {isAdmin && (
         <div className="rk-card rk-walletline">
           <Wallet size={16} /><span>Saldo crediti fornitore</span><strong className="rk-mono">{eur(creditBalance)}</strong>
@@ -654,6 +810,10 @@ function StockTab({ data, isAdmin, onAdd, onSell, onGift, onDelete, onAssign, on
                 <span className="rk-chip">{i.sku}</span>
                 {i.fisico === "viaggio" && <span className="rk-badge rk-badge-travel"><Truck size={11} /> in viaggio</span>}
                 {i.fisico === "ordinato" && <span className="rk-badge rk-badge-order">da spedire</span>}
+                {i.stato === "caricato" && i.caricatoAt && (() => {
+                  const g = daysBetween(i.caricatoAt);
+                  return <span className={`rk-badge rk-badge-giac ${g >= SLOW_DAYS ? "rk-badge-slow" : ""}`}><Clock size={11} /> {g}gg</span>;
+                })()}
                 <div className="rk-row-main">
                   <strong>{i.brand} · {i.nome}</strong>
                   <span className="rk-row-meta">{i.categoria}{i.taglia ? ` · tg ${i.taglia}` : ""} · {i.data}{i.note ? ` · ${i.note}` : ""}</span>
@@ -755,22 +915,36 @@ function OrdersTab({ data, onAdd, onDelivered, onDelete }) {
 }
 
 /* ---------- Vendite ---------- */
-function SalesTab({ data, onDelete }) {
+const RESO_LABEL = { no: "", in_arrivo: "reso in arrivo", spedito: "reso spedito", consegnato: "reso consegnato" };
+function SalesTab({ data, onDelete, onSetReso }) {
   if (data.sales.length === 0) return <p className="rk-empty">Nessuna vendita. Dallo Stock premi «Vendi».</p>;
   return (
     <div className="rk-rows">
       {data.sales.map((s) => {
-        const margine = s.prezzo - s.costo - (s.costiVendita || 0);
+        const reso = s.reso && s.reso !== "no";
+        // con un reso il profitto della vendita va a zero (i costi vendita restano come spesa già sostenuta)
+        const margine = reso ? 0 : s.prezzo - s.costo - (s.costiVendita || 0);
+        const roi = s.costo > 0 ? (margine / s.costo) * 100 : 0;
+        const tone = reso ? "mut" : roiTone(roi);
+        const fasi = [["no", "Nessun reso"], ["in_arrivo", "Reso in arrivo"], ["spedito", "Reso spedito"], ["consegnato", "Reso consegnato → in stock"]];
         return (
-          <div key={s.id} className="rk-row">
+          <div key={s.id} className={`rk-row ${reso ? "rk-row-reso" : ""}`}>
             <span className="rk-chip">{s.sku}</span>
+            {reso && <span className="rk-badge rk-badge-reso">{RESO_LABEL[s.reso]}</span>}
+            {s.giacenzaGiorni != null && !reso && <span className={`rk-badge rk-badge-giac ${s.giacenzaGiorni >= SLOW_DAYS ? "rk-badge-slow" : ""}`}><Clock size={11} /> {s.giacenzaGiorni}gg</span>}
             <div className="rk-row-main">
               <strong>{s.brand} · {s.nome}</strong>
               <span className="rk-row-meta">{s.data} · {s.canale} · {s.telefono}</span>
             </div>
             <div className="rk-saleNums rk-mono"><span>{eur(s.prezzo)}</span><span className="rk-mutlabel">costo {eur(s.costo)}{s.costiVendita ? ` + ${eur(s.costiVendita)}` : ""}</span></div>
-            <span className={`rk-mono rk-margin ${margine >= 0 ? "rk-pos" : "rk-neg"}`}>{margine >= 0 ? "+" : ""}{eur(margine)}</span>
-            <button className="rk-btn rk-ghost rk-small rk-danger" onClick={() => onDelete(s)}><Trash2 size={14} /></button>
+            <div className="rk-saleMargin">
+              <span className={`rk-mono rk-margin rk-tonetext-${tone}`}>{reso ? eur(0) : (margine >= 0 ? "+" : "") + eur(margine)}</span>
+              {!reso && <span className={`rk-roi rk-tone-${tone}`}>ROI {roi.toFixed(0)}%</span>}
+            </div>
+            <select className="rk-input rk-input-auto rk-reso-select" value={s.reso || "no"} onChange={(e) => onSetReso(s, e.target.value)}>
+              {fasi.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+            </select>
+            <button className="rk-btn rk-ghost rk-small rk-danger" title="Annulla vendita" onClick={() => onDelete(s)}><Trash2 size={14} /></button>
           </div>
         );
       })}
@@ -780,7 +954,7 @@ function SalesTab({ data, onDelete }) {
 
 /* ---------- Spese ---------- */
 const EMPTY_EXP = { tipo: "Boost", importo: "", data: "", nota: "", telefono: "" };
-function ExpensesTab({ data, onAdd, onDelete }) {
+function ExpensesTab({ data, onAdd, onDelete, onEdit }) {
   const [form, setForm] = useState({ ...EMPTY_EXP, data: todayISO() });
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   return (
@@ -804,12 +978,35 @@ function ExpensesTab({ data, onAdd, onDelete }) {
               <span className="rk-badge rk-badge-exp">{e.tipo}</span>
               <div className="rk-row-main"><strong>{e.nota || e.tipo}</strong><span className="rk-row-meta">{e.data}{e.telefono ? ` · ${e.telefono}` : ""}</span></div>
               <span className="rk-mono rk-neg">−{eur(e.importo)}</span>
+              <button className="rk-btn rk-ghost rk-small" title="Modifica" onClick={() => onEdit(e)}><Pencil size={14} /></button>
               <button className="rk-btn rk-ghost rk-small rk-danger" onClick={() => onDelete(e)}><Trash2 size={14} /></button>
             </div>
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+function EditExpenseModal({ exp, phones, onClose, onSave }) {
+  const [form, setForm] = useState({
+    tipo: exp.tipo, importo: String(exp.importo).replace(".", ","),
+    data: exp.data, nota: exp.nota || "", telefono: exp.telefono || "",
+  });
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const tipi = EXPENSE_TYPES.includes(form.tipo) ? EXPENSE_TYPES : [form.tipo, ...EXPENSE_TYPES];
+  return (
+    <Overlay onClose={onClose}>
+      <div className="rk-modal-head"><h3 className="rk-modal-title rk-m0"><Pencil size={16} /> Modifica spesa</h3><button className="rk-btn rk-ghost rk-sq" onClick={onClose}><X size={16} /></button></div>
+      <div className="rk-formgrid rk-formgrid-tight">
+        <L label="Tipo"><select className="rk-input" value={form.tipo} onChange={set("tipo")}>{tipi.map((t) => <option key={t}>{t}</option>)}</select></L>
+        <L label="Importo €"><input className="rk-input rk-mono" inputMode="decimal" value={form.importo} onChange={set("importo")} /></L>
+        <L label="Data"><input className="rk-input" type="date" value={form.data} onChange={set("data")} /></L>
+        <L label="Telefono (opz.)"><select className="rk-input" value={form.telefono} onChange={set("telefono")}><option value="">—</option>{phones.map((p) => <option key={p} value={p}>{p}</option>)}</select></L>
+        <L label="Nota" wide><input className="rk-input" placeholder="Es. 9 buste costumi" value={form.nota} onChange={set("nota")} /></L>
+      </div>
+      <div className="rk-formfoot"><span /><button className="rk-btn rk-primary" onClick={() => onSave(exp.id, { tipo: form.tipo, importo: num(form.importo), data: form.data, nota: form.nota.trim(), telefono: form.telefono })}>Salva</button></div>
+    </Overlay>
   );
 }
 
@@ -871,33 +1068,37 @@ function CreditsTab({ data, balance, onIn, onPay, onDelete }) {
 
 /* ---------- Modali ---------- */
 function SaleModal({ item, onClose, onConfirm }) {
-  const [form, setForm] = useState({ prezzo: "", canale: "Vinted", costi: "", data: todayISO() });
+  const [form, setForm] = useState({ prezzo: "", canale: "Vinted", canaleAltro: "", costi: "", data: todayISO() });
   const [busy, setBusy] = useState(false);
   const margine = num(form.prezzo) - item.costo - num(form.costi);
+  const roi = item.costo > 0 ? (margine / item.costo) * 100 : 0;
+  const giac = daysBetween(item.caricatoAt || item.data, form.data || todayISO());
   return (
     <Overlay onClose={onClose}>
       <div className="rk-modal-head"><span className="rk-chip">{item.sku}</span><button className="rk-btn rk-ghost rk-sq" onClick={onClose}><X size={16} /></button></div>
       <h3 className="rk-modal-title">{item.brand} · {item.nome}</h3>
-      <p className="rk-mutlabel">Costo {eur(item.costo)} · {item.telefono || "in stock"}</p>
+      <p className="rk-mutlabel">Costo {eur(item.costo)} · {item.telefono || "in stock"}{giac != null ? ` · giacenza ${giac}gg` : ""}</p>
       <div className="rk-formgrid rk-formgrid-tight">
         <L label="Prezzo vendita €"><input autoFocus className="rk-input rk-mono" inputMode="decimal" placeholder="0,00" value={form.prezzo} onChange={(e) => setForm({ ...form, prezzo: e.target.value })} /></L>
         <L label="Canale"><select className="rk-input" value={form.canale} onChange={(e) => setForm({ ...form, canale: e.target.value })}>{CHANNELS.map((c) => <option key={c}>{c}</option>)}</select></L>
+        {form.canale === "Altro" && <L label="Quale canale?" wide><input className="rk-input" placeholder="Es. Subito, Instagram…" value={form.canaleAltro} onChange={(e) => setForm({ ...form, canaleAltro: e.target.value })} /></L>}
         <L label="Costi vendita € (opz.)"><input className="rk-input rk-mono" inputMode="decimal" placeholder="0,00" value={form.costi} onChange={(e) => setForm({ ...form, costi: e.target.value })} /></L>
         <L label="Data"><input className="rk-input" type="date" value={form.data} onChange={(e) => setForm({ ...form, data: e.target.value })} /></L>
       </div>
       <div className="rk-formfoot">
-        <span className="rk-mutlabel">Margine: <strong className={`rk-mono ${margine >= 0 ? "rk-pos" : "rk-neg"}`}>{eur(margine)}</strong></span>
+        <span className="rk-mutlabel">Margine <strong className={`rk-mono rk-tonetext-${roiTone(roi)}`}>{eur(margine)}</strong> · ROI <strong className={`rk-mono rk-tonetext-${roiTone(roi)}`}>{roi.toFixed(0)}%</strong></span>
         <button className="rk-btn rk-primary" disabled={!num(form.prezzo) || busy} onClick={() => { setBusy(true); onConfirm(item, form); }}>{busy ? <Loader2 size={15} className="rk-spin" /> : null} Registra vendita</button>
       </div>
     </Overlay>
   );
 }
 function BulkSaleModal({ items, onClose, onConfirm }) {
-  const [form, setForm] = useState({ prezzo: "", canale: "Vinted", costi: "", data: todayISO() });
+  const [form, setForm] = useState({ prezzo: "", canale: "Vinted", canaleAltro: "", costi: "", data: todayISO() });
   const [busy, setBusy] = useState(false);
   const costoTot = items.reduce((a, i) => a + i.costo, 0);
   const ricavoTot = items.length * num(form.prezzo);
   const margine = ricavoTot - items.length * num(form.costi) - costoTot;
+  const roi = costoTot > 0 ? (margine / costoTot) * 100 : 0;
   return (
     <Overlay onClose={onClose}>
       <div className="rk-modal-head"><h3 className="rk-modal-title rk-m0"><Tag size={16} /> Vendi {items.length} pezzi</h3><button className="rk-btn rk-ghost rk-sq" onClick={onClose}><X size={16} /></button></div>
@@ -905,11 +1106,12 @@ function BulkSaleModal({ items, onClose, onConfirm }) {
       <div className="rk-formgrid rk-formgrid-tight">
         <L label="Prezzo per pezzo €"><input autoFocus className="rk-input rk-mono" inputMode="decimal" placeholder="0,00" value={form.prezzo} onChange={(e) => setForm({ ...form, prezzo: e.target.value })} /></L>
         <L label="Canale"><select className="rk-input" value={form.canale} onChange={(e) => setForm({ ...form, canale: e.target.value })}>{CHANNELS.map((c) => <option key={c}>{c}</option>)}</select></L>
+        {form.canale === "Altro" && <L label="Quale canale?" wide><input className="rk-input" placeholder="Es. Subito, Instagram…" value={form.canaleAltro} onChange={(e) => setForm({ ...form, canaleAltro: e.target.value })} /></L>}
         <L label="Costi per pezzo € (opz.)"><input className="rk-input rk-mono" inputMode="decimal" placeholder="0,00" value={form.costi} onChange={(e) => setForm({ ...form, costi: e.target.value })} /></L>
         <L label="Data"><input className="rk-input" type="date" value={form.data} onChange={(e) => setForm({ ...form, data: e.target.value })} /></L>
       </div>
       <div className="rk-formfoot">
-        <span className="rk-mutlabel">Ricavo <strong className="rk-mono">{eur(ricavoTot)}</strong> · Margine <strong className={`rk-mono ${margine >= 0 ? "rk-pos" : "rk-neg"}`}>{eur(margine)}</strong></span>
+        <span className="rk-mutlabel">Ricavo <strong className="rk-mono">{eur(ricavoTot)}</strong> · Margine <strong className={`rk-mono rk-tonetext-${roiTone(roi)}`}>{eur(margine)}</strong> · ROI <strong className={`rk-mono rk-tonetext-${roiTone(roi)}`}>{roi.toFixed(0)}%</strong></span>
         <button className="rk-btn rk-primary" disabled={!num(form.prezzo) || busy} onClick={() => { setBusy(true); onConfirm(items, form); }}>{busy ? <Loader2 size={15} className="rk-spin" /> : null} Registra {items.length}</button>
       </div>
     </Overlay>
@@ -995,6 +1197,84 @@ function SettingsModal({ data, role, onClose, onSave }) {
     </Overlay>
   );
 }
+/* ---------- To-do ---------- */
+function TodoTab({ data, onAdd, onToggle, onDelete }) {
+  const [testo, setTesto] = useState("");
+  const aperti = data.todos.filter((t) => !t.fatto);
+  const fatti = data.todos.filter((t) => t.fatto);
+  const add = () => { if (testo.trim()) { onAdd(testo.trim()); setTesto(""); } };
+  return (
+    <div className="rk-stack">
+      <div className="rk-card">
+        <div className="rk-todoadd">
+          <input className="rk-input" placeholder="Es. Spedire COS-012 · rispondere a offerta…" value={testo}
+            onChange={(e) => setTesto(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+          <button className="rk-btn rk-primary" disabled={!testo.trim()} onClick={add}><Plus size={15} /> Aggiungi</button>
+        </div>
+      </div>
+      {data.todos.length === 0 ? <p className="rk-empty">Nessun promemoria. Aggiungi la prima cosa da fare.</p> : (
+        <div className="rk-rows">
+          {aperti.map((t) => (
+            <div key={t.id} className="rk-row rk-todo">
+              <button className="rk-todocheck" onClick={() => onToggle(t)} aria-label="Fatto" />
+              <span className="rk-row-main"><strong>{t.testo}</strong></span>
+              <button className="rk-btn rk-ghost rk-small rk-danger" onClick={() => onDelete(t)}><Trash2 size={14} /></button>
+            </div>
+          ))}
+          {fatti.map((t) => (
+            <div key={t.id} className="rk-row rk-todo rk-todo-done">
+              <button className="rk-todocheck on" onClick={() => onToggle(t)} aria-label="Riapri"><Check size={12} /></button>
+              <span className="rk-row-main"><strong>{t.testo}</strong></span>
+              <button className="rk-btn rk-ghost rk-small rk-danger" onClick={() => onDelete(t)}><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- dati demo ---------- */
+function demoFixture() {
+  const today = todayISO();
+  const dAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
+  const tAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString(); };
+  const id = (x) => "demo-" + x;
+  return {
+    profile: { role: "admin", pct: 5, phones: ["iPhone Vinted", "Account 2", "Account 3"], email: "demo@rack.app" },
+    data: {
+      items: [
+        { id: id("i1"), sku: "BUR-COS-001", brand: "Burberry", nome: "Costume check", categoria: "Costume", taglia: "M", costo: 15.41, telefono: "iPhone Vinted", stato: "caricato", fisico: "casa", vinted: true, caricatoAt: tAgo(42), data: dAgo(45), note: "" },
+        { id: id("i2"), sku: "BUR-COS-002", brand: "Burberry", nome: "Costume blu", categoria: "Costume", taglia: "L", costo: 15.41, telefono: "Account 2", stato: "caricato", fisico: "casa", vinted: false, caricatoAt: tAgo(5), data: dAgo(7), note: "" },
+        { id: id("i3"), sku: "JUV-KIT-001", brand: "Juventus", nome: "Kit home 24/25", categoria: "Kit calcio", taglia: "M", costo: 22.00, telefono: "", stato: "stock", fisico: "viaggio", vinted: false, caricatoAt: null, data: today, note: "Ordine fornitore" },
+        { id: id("i4"), sku: "NIK-TUT-001", brand: "Nike", nome: "Tuta tech", categoria: "Tuta", taglia: "S", costo: 28.00, telefono: "", stato: "stock", fisico: "ordinato", vinted: false, caricatoAt: null, data: today, note: "" },
+      ],
+      sales: [
+        { id: id("s1"), itemId: id("x1"), sku: "BUR-COS-010", nome: "Costume nero", brand: "Burberry", prezzo: 39.90, costo: 15.41, costiVendita: 0.24, canale: "Vinted", data: dAgo(1), telefono: "iPhone Vinted", reso: "no", giacenzaGiorni: 6 },
+        { id: id("s2"), itemId: id("x2"), sku: "JUV-KIT-010", nome: "Kit away", brand: "Juventus", prezzo: 45.00, costo: 22.00, costiVendita: 0, canale: "eBay", data: today, telefono: "Account 2", reso: "no", giacenzaGiorni: 18 },
+        { id: id("s3"), itemId: id("x3"), sku: "NIK-TUT-010", nome: "Tuta grigia", brand: "Nike", prezzo: 49.00, costo: 28.00, costiVendita: 0.50, canale: "Depop", data: dAgo(3), telefono: "Account 3", reso: "in_arrivo", giacenzaGiorni: 40 },
+      ],
+      expenses: [
+        { id: id("e1"), tipo: "Boost", importo: 3.99, data: dAgo(2), nota: "Boost 3gg iPhone Vinted", telefono: "iPhone Vinted", saleId: null },
+        { id: id("e2"), tipo: "Buste / packaging", importo: 4.80, data: dAgo(4), nota: "20 buste", telefono: "", saleId: null },
+        { id: id("e3"), tipo: "Costi vendita", importo: 0.24, data: dAgo(1), nota: "Costi vendita BUR-COS-010", telefono: "iPhone Vinted", saleId: id("s1") },
+      ],
+      credits: [
+        { id: id("c1"), tipo: "in", ordine: 200, importo: 10, usatoCredito: 0, contanti: 0, data: dAgo(6), nota: "Ordine di Marco" },
+        { id: id("c2"), tipo: "pagamento", ordine: 0, importo: 150, usatoCredito: 10, contanti: 140, data: dAgo(3), nota: "Pagamento lotto costumi" },
+      ],
+      orders: [
+        { id: id("o1"), tracking: "LP00123456789CN", corriere: "Yanwen", nota: "10 costumi + 5 kit", data: dAgo(2), stato: "in_viaggio", itemIds: [id("i3")] },
+      ],
+      todos: [
+        { id: id("t1"), testo: "Spedire JUV-KIT-010 a Luca", fatto: false },
+        { id: id("t2"), testo: "Rispondere offerta su BUR-COS-002", fatto: false },
+        { id: id("t3"), testo: "Ricomprare buste", fatto: true },
+      ],
+    },
+  };
+}
+
 function Overlay({ children, onClose }) {
   return <div className="rk-overlay" onClick={onClose}><div className="rk-modal" onClick={(e) => e.stopPropagation()}>{children}</div></div>;
 }

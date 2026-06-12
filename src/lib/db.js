@@ -8,12 +8,15 @@ const mapFrom = {
     id: r.id, sku: r.sku, brand: r.brand, nome: r.nome, categoria: r.categoria,
     taglia: r.taglia, costo: Number(r.costo), telefono: r.telefono || "",
     stato: r.stato, fisico: r.fisico, vinted: !!r.vinted, data: r.data, note: r.note || "",
+    caricatoAt: r.caricato_at || null,
   }),
   sales: (r) => ({
     id: r.id, itemId: r.item_id, sku: r.sku, nome: r.nome, brand: r.brand,
     prezzo: Number(r.prezzo), costo: Number(r.costo), costiVendita: Number(r.costi_vendita),
-    canale: r.canale, data: r.data, telefono: r.telefono || "",
+    canale: r.canale, data: r.data, telefono: r.telefono || "", reso: r.reso || "no",
+    giacenzaGiorni: r.giacenza_giorni ?? null,
   }),
+  todos: (r) => ({ id: r.id, testo: r.testo, fatto: !!r.fatto }),
   expenses: (r) => ({
     id: r.id, tipo: r.tipo, importo: Number(r.importo), data: r.data,
     nota: r.nota || "", telefono: r.telefono || "", saleId: r.sale_id || null,
@@ -34,12 +37,15 @@ const mapTo = {
     user_id: uid, sku: o.sku, brand: o.brand, nome: o.nome, categoria: o.categoria,
     taglia: o.taglia, costo: o.costo, telefono: o.telefono || "", stato: o.stato,
     fisico: o.fisico, vinted: !!o.vinted, data: o.data || null, note: o.note || "",
+    caricato_at: o.caricatoAt || null,
   }),
   sales: (o, uid) => ({
     user_id: uid, item_id: o.itemId, sku: o.sku, nome: o.nome, brand: o.brand,
     prezzo: o.prezzo, costo: o.costo, costi_vendita: o.costiVendita || 0,
-    canale: o.canale, data: o.data || null, telefono: o.telefono || "",
+    canale: o.canale, data: o.data || null, telefono: o.telefono || "", reso: o.reso || "no",
+    giacenza_giorni: o.giacenzaGiorni ?? null,
   }),
+  todos: (o, uid) => ({ user_id: uid, testo: o.testo, fatto: !!o.fatto }),
   expenses: (o, uid) => ({
     user_id: uid, tipo: o.tipo, importo: o.importo, data: o.data || null,
     nota: o.nota || "", telefono: o.telefono || "", sale_id: o.saleId || null,
@@ -74,7 +80,7 @@ export async function updateProfile(userId, patch) {
 
 /* ---------- caricamento completo ---------- */
 export async function loadAll(userId) {
-  const tables = ["items", "sales", "expenses", "credits", "orders"];
+  const tables = ["items", "sales", "expenses", "credits", "orders", "todos"];
   const out = {};
   await Promise.all(
     tables.map(async (t) => {
@@ -106,7 +112,7 @@ export async function updateRow(table, id, patch) {
   // patch è in camelCase: lo converto al volo per i campi noti
   const remap = {
     itemId: "item_id", costiVendita: "costi_vendita", usatoCredito: "usato_credito",
-    itemIds: "item_ids", saleId: "sale_id",
+    itemIds: "item_ids", saleId: "sale_id", caricatoAt: "caricato_at", giacenzaGiorni: "giacenza_giorni",
   };
   const row = {};
   Object.entries(patch).forEach(([k, v]) => { row[remap[k] || k] = v; });

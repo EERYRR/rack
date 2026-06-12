@@ -2,7 +2,7 @@ import { useState } from "react";
 import { supabase, hasConfig } from "../supabaseClient";
 import { LogIn, UserPlus, Loader2 } from "lucide-react";
 
-export default function AuthPage() {
+export default function AuthPage({ onDemo }) {
   const [mode, setMode] = useState("login"); // login | register
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -40,7 +40,7 @@ export default function AuthPage() {
       <div className="rk-auth-card">
         <div className="rk-auth-brand">
           <span className="rk-chip rk-chip-logo">RACK</span>
-          <span className="rk-sub">gestione resell</span>
+          <span className="rk-sub">your reselling HQ</span>
         </div>
 
         <h1 className="rk-auth-title">{mode === "login" ? "Accedi" : "Crea account"}</h1>
@@ -83,6 +83,12 @@ export default function AuthPage() {
         >
           {mode === "login" ? "Non hai un account? Registrati" : "Hai già un account? Accedi"}
         </button>
+
+        {onDemo && (
+          <button className="rk-btn rk-ghost rk-auth-demo" onClick={onDemo}>
+            👀 Prova la demo (dati di esempio)
+          </button>
+        )}
       </div>
     </div>
   );

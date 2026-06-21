@@ -239,3 +239,14 @@ body{font-family:'Space Grotesk',system-ui,sans-serif; color:var(--ink); -webkit
 .rk-auth-msg{background:var(--green-dim); color:var(--green); font-size:13px; padding:9px 12px; border-radius:8px; margin:14px 0 0;}
 
 @media(prefers-reduced-motion:reduce){.rk-barfill,.rk-spin{transition:none; animation:none;}}
+
+/* ---- v3: team code, payouts split, members ---- */
+.rk-joincard{display:flex; align-items:center; justify-content:space-between; gap:12px; background:linear-gradient(90deg, var(--cyan-dim), var(--card)); border:1px solid var(--cyan); border-radius:10px; padding:12px 14px;}
+.rk-joincode{font-size:22px; font-weight:700; letter-spacing:.22em; color:var(--cyan);}
+.rk-splitrow{display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line-soft); font-size:14px;}
+.rk-splitrow span{color:var(--mut);}
+.rk-splitrow-total{border-bottom:none; border-top:2px solid var(--line); margin-top:4px; padding-top:10px;}
+.rk-splitrow-total span{color:var(--ink); font-weight:600;}
+.rk-splitrow-total strong{font-size:17px;}
+.rk-kpi .rk-kpi-label svg{vertical-align:-2px; margin-right:4px;}
+.rk-auth-demo{margin-top:14px;}

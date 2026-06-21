@@ -250,3 +250,6 @@ body{font-family:'Space Grotesk',system-ui,sans-serif; color:var(--ink); -webkit
 .rk-splitrow-total strong{font-size:17px;}
 .rk-kpi .rk-kpi-label svg{vertical-align:-2px; margin-right:4px;}
 .rk-auth-demo{margin-top:14px;}
+
+/* onboarding note under each choice */
+.rk-onbnote{font-size:12px; color:var(--mut); margin:-6px 0 14px; text-align:center;}

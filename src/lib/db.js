@@ -87,25 +87,20 @@ export async function loadWorkspaceContext(userId) {
   return { workspace: ws, membership, members: members || [] };
 }
 
-export async function createWorkspace(userId, name, displayName) {
-  const code = randomCode();
-  const { data: ws, error } = await supabase
-    .from("workspaces").insert({ name: name || "My team", join_code: code }).select().single();
+export async function createWorkspace(userId, name, displayName, isTeam = true) {
+  const { data, error } = await supabase.rpc("create_team", {
+    p_name: name || (isTeam ? "My team" : "My space"), p_display: displayName || null, p_is_team: isTeam,
+  });
   if (error) throw error;
-  const { error: e2 } = await supabase.from("memberships")
-    .insert({ workspace_id: ws.id, user_id: userId, role: "manager", display_name: displayName || null });
-  if (e2) throw e2;
-  return ws.id;
+  return data; // workspace id
 }
 
 export async function joinWorkspace(userId, code, displayName) {
-  const { data: ws, error } = await supabase
-    .from("workspaces").select("id").eq("join_code", (code || "").toUpperCase().trim()).single();
-  if (error || !ws) throw new Error("Invalid team code");
-  const { error: e2 } = await supabase.from("memberships")
-    .insert({ workspace_id: ws.id, user_id: userId, role: "seller", display_name: displayName || null });
-  if (e2) throw e2;
-  return ws.id;
+  const { data, error } = await supabase.rpc("join_team", {
+    p_code: (code || "").toUpperCase().trim(), p_display: displayName || null,
+  });
+  if (error) throw new Error(error.message || "Invalid team code");
+  return data;
 }
 
 export async function updateWorkspace(wsId, patch) {

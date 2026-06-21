@@ -99,6 +99,8 @@ function Workspace({ session, demo, onExitDemo }) {
   const canEdit = role !== "investor";       // managers + sellers can operate
   const canManage = role === "manager";      // settings, roles, payout config
   const wsId = ctxState?.workspace?.id || "demo-ws";
+  // a workspace is a "team" if flagged, or if more than one person is in it
+  const isTeam = !!(ctxState?.workspace?.is_team) || (ctxState?.members?.length || 0) > 1;
 
   const ctx = useMemo(() => ({ userId, wsId }), [userId, wsId]);
 
@@ -332,7 +334,7 @@ function Workspace({ session, demo, onExitDemo }) {
     ["sales", "Sales", <Tag size={14} key="i" />],
     ["exp", "Expenses", <Receipt size={14} key="i" />],
     ["todo", "To-do", <ListTodo size={14} key="i" />],
-    ["pay", "Payouts", <Coins size={14} key="i" />],
+    ...(isTeam ? [["pay", "Payouts", <Coins size={14} key="i" />]] : []),
     ["cred", "Supplier", <Wallet size={14} key="i" />],
   ];
   const inTransit = data.orders.filter((o) => o.stato === "in_viaggio").length;
@@ -343,7 +345,7 @@ function Workspace({ session, demo, onExitDemo }) {
       <header className="rk-header">
         <div className="rk-brandmark">
           <span className="rk-chip rk-chip-logo">RACK</span>
-          <span className="rk-sub rk-hide-sm">{ctxState.workspace.name} · {ROLE_LABEL[role]}</span>
+          <span className="rk-sub rk-hide-sm">{ctxState.workspace.name}{isTeam ? ` · ${ROLE_LABEL[role]}` : ""}</span>
         </div>
         <div className="rk-header-actions">
           <button className="rk-btn rk-ghost" onClick={exportCSV} title="Export CSV"><Download size={15} /><span className="rk-hide-sm">CSV</span></button>
@@ -384,7 +386,7 @@ function Workspace({ session, demo, onExitDemo }) {
       {bulkNoteIds && <BulkNoteModal count={bulkNoteIds.length} onClose={() => setBulkNoteIds(null)} onConfirm={(n) => bulkNote(bulkNoteIds, n)} />}
       {bulkFisicoIds && <BulkFisicoModal count={bulkFisicoIds.length} onClose={() => setBulkFisicoIds(null)} onConfirm={(f) => bulkFisico(bulkFisicoIds, f)} />}
       {editExp && <EditExpenseModal exp={editExp} phones={data.phones} onClose={() => setEditExp(null)} onSave={saveExpenseEdit} />}
-      {showSettings && <SettingsModal ws={ctxState.workspace} members={ctxState.members} role={role} canManage={canManage} onClose={() => setShowSettings(false)} onSave={saveSettings} onChangeRole={changeRole} flash={flash} />}
+      {showSettings && <SettingsModal ws={ctxState.workspace} members={ctxState.members} role={role} canManage={canManage} isTeam={isTeam} onClose={() => setShowSettings(false)} onSave={saveSettings} onChangeRole={changeRole} flash={flash} />}
       {toast && <div className="rk-toast">{toast}</div>}
     </div>
   );
@@ -401,7 +403,8 @@ function Onboarding({ userId, email, onDone, onLogout }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
-  const create = async () => { setErr(null); setBusy(true); try { await createWorkspace(userId, name.trim() || "My team", display.trim()); await onDone(); } catch (e) { setErr(e.message || "Error"); setBusy(false); } };
+  const startSolo = async () => { setErr(null); setBusy(true); try { await createWorkspace(userId, "My space", display.trim(), false); await onDone(); } catch (e) { setErr(e.message || "Error"); setBusy(false); } };
+  const create = async () => { setErr(null); setBusy(true); try { await createWorkspace(userId, name.trim() || "My team", display.trim(), true); await onDone(); } catch (e) { setErr(e.message || "Error"); setBusy(false); } };
   const join = async () => { setErr(null); setBusy(true); try { await joinWorkspace(userId, code, display.trim()); await onDone(); } catch (e) { setErr(e.message || "Invalid code"); setBusy(false); } };
 
   return (
@@ -410,10 +413,22 @@ function Onboarding({ userId, email, onDone, onLogout }) {
         <div className="rk-auth-brand"><span className="rk-chip rk-chip-logo">RACK</span><span className="rk-sub">your reselling HQ</span></div>
         {mode === "choose" && (<>
           <h1 className="rk-auth-title">Welcome</h1>
-          <p className="rk-mutlabel rk-mb6">Create a new team or join an existing one with a code.</p>
-          <button className="rk-btn rk-primary rk-auth-submit" onClick={() => setMode("create")}><Plus size={16} /> Create a team</button>
-          <button className="rk-btn rk-ghost rk-auth-submit" onClick={() => setMode("join")}><UserPlus size={16} /> Join with a code</button>
+          <p className="rk-mutlabel rk-mb6">How do you want to use RACK?</p>
+          <button className="rk-btn rk-primary rk-auth-submit" onClick={() => setMode("solo")}><Package size={16} /> Start solo</button>
+          <p className="rk-onbnote">Just you, tracking your own reselling.</p>
+          <button className="rk-btn rk-ghost rk-auth-submit" onClick={() => setMode("create")}><Users size={16} /> Create a team</button>
+          <p className="rk-onbnote">You manage sellers and an investor, with payouts.</p>
+          <button className="rk-btn rk-ghost rk-auth-submit" onClick={() => setMode("join")}><UserPlus size={16} /> Join a team</button>
+          <p className="rk-onbnote">You have a team code from someone else.</p>
           <button className="rk-auth-switch" onClick={onLogout}>Log out</button>
+        </>)}
+        {mode === "solo" && (<>
+          <h1 className="rk-auth-title">Start solo</h1>
+          <p className="rk-mutlabel rk-mb6">Your personal reselling space. You can invite people later.</p>
+          <label className="rk-field"><span className="rk-field-label">Your name</span><input className="rk-input" value={display} onChange={(e) => setDisplay(e.target.value)} /></label>
+          {err && <p className="rk-auth-err">{err}</p>}
+          <button className="rk-btn rk-primary rk-auth-submit" disabled={busy} onClick={startSolo}>{busy ? <Loader2 size={16} className="rk-spin" /> : null} Let's go</button>
+          <button className="rk-auth-switch" onClick={() => setMode("choose")}>Back</button>
         </>)}
         {mode === "create" && (<>
           <h1 className="rk-auth-title">Create a team</h1>
@@ -962,7 +977,7 @@ function EditExpenseModal({ exp, phones, onClose, onSave }) {
     </Overlay>
   );
 }
-function SettingsModal({ ws, members, role, canManage, onClose, onSave, onChangeRole, flash }) {
+function SettingsModal({ ws, members, role, canManage, isTeam, onClose, onSave, onChangeRole, flash }) {
   const [name, setName] = useState(ws.name);
   const [phones, setPhones] = useState(Array.isArray(ws.phones) ? [...ws.phones] : []);
   const [pct, setPct] = useState(String(ws.pct));
@@ -972,16 +987,16 @@ function SettingsModal({ ws, members, role, canManage, onClose, onSave, onChange
   const copyCode = () => { navigator.clipboard?.writeText(ws.join_code); flash && flash("Code copied"); };
   return (
     <Overlay onClose={onClose}>
-      <div className="rk-modal-head"><h3 className="rk-modal-title rk-m0"><Settings size={16} /> Team settings</h3><button className="rk-btn rk-ghost rk-sq" onClick={onClose}><X size={16} /></button></div>
+      <div className="rk-modal-head"><h3 className="rk-modal-title rk-m0"><Settings size={16} /> {isTeam ? "Team settings" : "Settings"}</h3><button className="rk-btn rk-ghost rk-sq" onClick={onClose}><X size={16} /></button></div>
 
       <div className="rk-joincard">
-        <div><div className="rk-field-label">Team join code</div><div className="rk-joincode rk-mono">{ws.join_code}</div></div>
+        <div><div className="rk-field-label">{isTeam ? "Team join code" : "Invite code"}</div><div className="rk-joincode rk-mono">{ws.join_code}</div></div>
         <button className="rk-btn rk-small" onClick={copyCode}><Copy size={13} /> Copy</button>
       </div>
-      <p className="rk-mutlabel rk-mb6">Share this code so sellers/investor can join your team on signup.</p>
+      <p className="rk-mutlabel rk-mb6">{isTeam ? "Share this code so sellers/investor can join your team on signup." : "Want to work with others? Share this code — when someone joins, RACK turns into a team with payouts."}</p>
 
       {canManage ? (<>
-        <label className="rk-field rk-mt12"><span className="rk-field-label">Team name</span><input className="rk-input" value={name} onChange={(e) => setName(e.target.value)} /></label>
+        <label className="rk-field rk-mt12"><span className="rk-field-label">{isTeam ? "Team name" : "Space name"}</span><input className="rk-input" value={name} onChange={(e) => setName(e.target.value)} /></label>
 
         <p className="rk-mutlabel rk-mt12 rk-mb6">Phones / accounts</p>
         <div className="rk-stack-tight">
@@ -989,30 +1004,35 @@ function SettingsModal({ ws, members, role, canManage, onClose, onSave, onChange
           <button className="rk-btn rk-ghost" onClick={() => setPhones([...phones, `Account ${phones.length + 1}`])}><Plus size={14} /> Add phone</button>
         </div>
 
-        <p className="rk-mutlabel rk-mt12 rk-mb6">Seller pay</p>
-        <div className="rk-formgrid rk-formgrid-tight">
-          <L label="€ per sale"><input className="rk-input rk-mono" inputMode="decimal" value={sBase} onChange={(e) => setSBase(e.target.value)} /></L>
-          <L label="€ per sale (bonus)"><input className="rk-input rk-mono" inputMode="decimal" value={sBonus} onChange={(e) => setSBonus(e.target.value)} /></L>
-          <L label="Bonus at … sales/day"><input className="rk-input rk-mono" inputMode="numeric" value={sThr} onChange={(e) => setSThr(e.target.value)} /></L>
+        <div className="rk-formgrid rk-formgrid-tight rk-mt12">
           <L label="Supplier %"><input className="rk-input rk-mono" inputMode="decimal" value={pct} onChange={(e) => setPct(e.target.value)} /></L>
         </div>
 
-        <p className="rk-mutlabel rk-mt12 rk-mb6">Team members</p>
-        <div className="rk-stack-tight">
-          {members.map((mb) => (
-            <div key={mb.id} className="rk-phone-edit">
-              {mb.role === "manager" ? <Crown size={14} /> : mb.role === "investor" ? <Eye size={14} /> : <Users size={14} />}
-              <span className="rk-row-main"><strong>{mb.display_name || "—"}</strong></span>
-              <select className="rk-input rk-input-auto" value={mb.role} onChange={(e) => onChangeRole(mb.id, e.target.value)}>
-                <option value="manager">Manager</option><option value="investor">Investor</option><option value="seller">Seller</option>
-              </select>
-            </div>
-          ))}
-        </div>
+        {isTeam && (<>
+          <p className="rk-mutlabel rk-mt12 rk-mb6">Seller pay</p>
+          <div className="rk-formgrid rk-formgrid-tight">
+            <L label="€ per sale"><input className="rk-input rk-mono" inputMode="decimal" value={sBase} onChange={(e) => setSBase(e.target.value)} /></L>
+            <L label="€ per sale (bonus)"><input className="rk-input rk-mono" inputMode="decimal" value={sBonus} onChange={(e) => setSBonus(e.target.value)} /></L>
+            <L label="Bonus at … sales/day"><input className="rk-input rk-mono" inputMode="numeric" value={sThr} onChange={(e) => setSThr(e.target.value)} /></L>
+          </div>
+
+          <p className="rk-mutlabel rk-mt12 rk-mb6">Team members</p>
+          <div className="rk-stack-tight">
+            {members.map((mb) => (
+              <div key={mb.id} className="rk-phone-edit">
+                {mb.role === "manager" ? <Crown size={14} /> : mb.role === "investor" ? <Eye size={14} /> : <Users size={14} />}
+                <span className="rk-row-main"><strong>{mb.display_name || "—"}</strong></span>
+                <select className="rk-input rk-input-auto" value={mb.role} onChange={(e) => onChangeRole(mb.id, e.target.value)}>
+                  <option value="manager">Manager</option><option value="investor">Investor</option><option value="seller">Seller</option>
+                </select>
+              </div>
+            ))}
+          </div>
+        </>)}
 
         <div className="rk-formfoot rk-mt12"><span /><button className="rk-btn rk-primary" onClick={() => onSave({ name, phones: phones.filter((p) => p.trim()), pct: num(pct) || 5, sellerBase: num(sBase), sellerBonus: num(sBonus), bonusThreshold: parseInt(sThr, 10) || 5 })}>Save</button></div>
       </>) : (
-        <p className="rk-mutlabel rk-mt12">Only the manager can edit team settings. Your role: <strong>{ROLE_LABEL[role]}</strong>.</p>
+        <p className="rk-mutlabel rk-mt12">Only the manager can edit settings. Your role: <strong>{ROLE_LABEL[role]}</strong>.</p>
       )}
     </Overlay>
   );
@@ -1024,7 +1044,7 @@ function demoFixture() {
   const tAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString(); };
   const id = (x) => "demo-" + x;
   const me = "demo-user", luca = "demo-luca", sara = "demo-sara";
-  const workspace = { id: "demo-ws", name: "Demo Team", join_code: "DEMO24", pct: 5, seller_base: 8, seller_bonus: 10, bonus_threshold: 5, phones: ["iPhone Vinted", "Account 2", "Account 3"] };
+  const workspace = { id: "demo-ws", name: "Demo Team", join_code: "DEMO24", is_team: true, pct: 5, seller_base: 8, seller_bonus: 10, bonus_threshold: 5, phones: ["iPhone Vinted", "Account 2", "Account 3"] };
   const members = [
     { id: "m1", user_id: me, role: "manager", display_name: "You" },
     { id: "m2", user_id: "demo-inv", role: "investor", display_name: "Investor" },

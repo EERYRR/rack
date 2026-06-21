@@ -310,7 +310,7 @@ function Workspace({ session, demo, onExitDemo }) {
 
   const changeRole = async (membershipId, newRole) => {
     if (!canManage || demo) return;
-    try { await setMemberRole(membershipId, newRole); setCtxState((c) => ({ ...c, members: c.members.map((m) => m.id === membershipId ? { ...m, role: newRole } : m) })); flash("Role updated"); } catch (e) { flash("Error"); }
+    try { await setMemberRole(membershipId, newRole); setCtxState((c) => ({ ...c, members: c.members.map((m) => m.id === membershipId ? { ...m, role: newRole } : m) })); flash("Role updated"); } catch (e) { flash(e.message || "Error"); }
   };
 
   const logout = async () => { if (demo) { onExitDemo && onExitDemo(); return; } await supabase.auth.signOut(); };

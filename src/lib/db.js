@@ -109,7 +109,7 @@ export async function updateWorkspace(wsId, patch) {
 }
 
 export async function setMemberRole(membershipId, role) {
-  const { error } = await supabase.from("memberships").update({ role }).eq("id", membershipId);
+  const { error } = await supabase.rpc("set_member_role", { p_membership_id: membershipId, p_role: role });
   if (error) throw error;
 }
 
